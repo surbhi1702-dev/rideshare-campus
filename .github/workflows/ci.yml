@@ -1,5 +1,6 @@
 # Runs the backend test suite (unit + integration + concurrency) against a real
-# PostgreSQL service container, and verifies the frontend production build.
+# PostgreSQL service container, runs the frontend tests and production build, and
+# (on main only) triggers a Render deploy once both jobs pass.
 name: CI
 
 on:
@@ -37,6 +38,13 @@ jobs:
           TEST_DB_USERNAME: postgres
           TEST_DB_PASSWORD: postgres
         run: mvn -B verify
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: backend/target/site/jacoco/
+          if-no-files-found: ignore
 
   frontend:
     runs-on: ubuntu-latest
@@ -48,6 +56,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      # Switch to `npm ci` (and add npm caching) once package-lock.json is committed.
-      - run: npm install
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
       - run: npm run build
+
+  # Vercel deploys the frontend on its own from the GitHub integration. The backend
+  # on Render has auto-deploy off and is deployed only from here, after tests pass.
+  # Add the Render "Deploy Hook" URL as the repository secret RENDER_DEPLOY_HOOK_URL;
+  # without it this job does nothing.
+  deploy-backend:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL is not set, skipping deploy."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null
+          echo "Render deploy triggered."

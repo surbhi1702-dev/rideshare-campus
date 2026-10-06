@@ -14,4 +14,9 @@ export default defineConfig({
       '/ws': { target: backend.replace(/^http/, 'ws'), ws: true, changeOrigin: true },
     },
   },
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.js',
+    restoreMocks: true,
+  },
 });

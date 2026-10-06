@@ -105,7 +105,7 @@ public class DemoDataSeeder implements ApplicationRunner {
         String email = handle + "@" + demoDomain;
         return userRepository.findByEmailIgnoreCase(email)
                 .map(user -> user.getId())
-                .orElseGet(() -> authService.register(new RegisterRequest(name, email, demoPassword, phone)).user().id());
+                .orElseGet(() -> authService.register(new RegisterRequest(name, email, demoPassword, phone)).body().user().id());
     }
 
     private static CreateRideRequest ride(String source, double sLat, double sLng, String destination, double dLat,

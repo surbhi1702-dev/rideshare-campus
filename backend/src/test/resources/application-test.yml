@@ -20,6 +20,9 @@ app:
     password: ""
   ride:
     lock-timeout-ms: 10000
+  # Tests register many users from one IP; RateLimitIntegrationTest turns it back on.
+  rate-limit:
+    enabled: false
 
 logging:
   level:

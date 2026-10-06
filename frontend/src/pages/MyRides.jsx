@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { Empty, ErrorAlert, Pager } from '../components/Feedback.jsx';
+import { Empty, ErrorAlert, Loading, Pager } from '../components/Feedback.jsx';
 import { RideRow } from '../components/RideVisuals.jsx';
 
 export default function MyRides() {
@@ -11,6 +11,7 @@ export default function MyRides() {
 
   const load = useCallback((pageNumber = 0) => {
     setError(null);
+    setPage(null);
     api.myRides({ scope, page: pageNumber, size: 10 }).then(setPage).catch(setError);
   }, [scope]);
 
@@ -31,7 +32,8 @@ export default function MyRides() {
         <button type="button" aria-pressed={scope === 'upcoming'} onClick={() => setScope('upcoming')}>Upcoming</button>
         <button type="button" aria-pressed={scope === 'past'} onClick={() => setScope('past')}>Past and cancelled</button>
       </div>
-      <ErrorAlert error={error} />
+      <ErrorAlert error={error} onRetry={() => load(0)} />
+      {!page && !error && <Loading label="Loading your rides…" />}
       {page && page.content.length === 0 && (
         <Empty action={scope === 'upcoming' ? <Link to="/search" className="btn">Find a ride</Link> : null}>
           {scope === 'upcoming' ? 'You have no upcoming rides.' : 'No past rides yet.'}

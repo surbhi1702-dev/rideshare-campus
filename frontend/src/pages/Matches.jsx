@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { Empty, ErrorAlert } from '../components/Feedback.jsx';
+import { Empty, ErrorAlert, Loading } from '../components/Feedback.jsx';
 import { RouteStrip, When } from '../components/RideVisuals.jsx';
 import { MatchList } from './SearchRides.jsx';
 
@@ -62,6 +62,7 @@ export default function Matches() {
       )}
 
       <ErrorAlert error={error} />
+      {!matches && !error && <Loading label="Finding similar rides…" />}
 
       {matches && matches.length === 0 && (
         <Empty action={<Link to={`/rides/${id}`} className="btn">View my ride</Link>}>

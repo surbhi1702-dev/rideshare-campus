@@ -27,14 +27,18 @@ public class OverlapGuard {
     }
 
     public void requireNoOverlap(Long userId, LocalDateTime departureAt, Collection<Long> ignoredRideIds) {
-        boolean overlapping = participantRepository.existsActiveRideInWindow(userId, RideStatus.ACTIVE,
-                departureAt.minusMinutes(windowMinutes), departureAt.plusMinutes(windowMinutes),
-                ignoredRideIds.isEmpty() ? NO_RIDES : ignoredRideIds);
-        if (overlapping) {
+        if (hasOverlap(userId, departureAt, ignoredRideIds)) {
             throw new ConflictException(ErrorCode.OVERLAPPING_RIDE,
                     "You already have an active ride within %d minutes of this time. Leave or cancel it first, "
                             .formatted(windowMinutes)
                             + "or join with 'replace my ride' to merge your trip.");
         }
+    }
+
+    /** Non-throwing variant, used when re-checking a waitlisted student at promotion time. */
+    public boolean hasOverlap(Long userId, LocalDateTime departureAt, Collection<Long> ignoredRideIds) {
+        return participantRepository.existsActiveRideInWindow(userId, RideStatus.ACTIVE,
+                departureAt.minusMinutes(windowMinutes), departureAt.plusMinutes(windowMinutes),
+                ignoredRideIds.isEmpty() ? NO_RIDES : ignoredRideIds);
     }
 }

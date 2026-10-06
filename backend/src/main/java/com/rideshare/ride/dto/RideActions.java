@@ -7,6 +7,8 @@ public record RideActions(
         boolean canEdit,
         boolean canCancel,
         boolean canStart,
-        boolean canComplete
+        boolean canComplete,
+        boolean canJoinWaitlist,
+        boolean canLeaveWaitlist
 ) {
 }

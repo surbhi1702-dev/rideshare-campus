@@ -2,6 +2,8 @@ package com.rideshare.ride;
 
 import com.rideshare.common.exception.ApiException;
 import com.rideshare.common.exception.ErrorCode;
+import com.rideshare.ride.waitlist.WaitlistProperties;
+import com.rideshare.ride.waitlist.WaitlistStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -16,7 +18,7 @@ class RidePolicyTest {
 
     private static final LocalDateTime NOW = LocalDateTime.of(2030, 3, 1, 12, 0);
 
-    private final RidePolicy policy = new RidePolicy(RideValidatorTest.properties());
+    private final RidePolicy policy = new RidePolicy(RideValidatorTest.properties(), new WaitlistProperties(2));
 
     private static ErrorCode code(Optional<ApiException> violation) {
         return violation.map(ApiException::getErrorCode).orElse(null);
@@ -102,5 +104,50 @@ class RidePolicyTest {
         ride.releaseSeats(1);
         assertThat(ride.getStatus()).isEqualTo(RideStatus.OPEN);
         assertThat(ride.getAvailableSeats()).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------------------ waitlist
+
+    @Test
+    void fullRideCanBeQueuedFor() {
+        Ride ride = ride(1, CAMPUS, AIRPORT, NOW.plusHours(3), 4, 4);
+        assertThat(policy.checkJoinWaitlist(ride, false, false, 1, 0, NOW)).isEmpty();
+    }
+
+    @Test
+    void queueingWhenSeatsAreFreeIsRejected() {
+        Ride ride = ride(1, CAMPUS, AIRPORT, NOW.plusHours(3), 4, 3);
+        assertThat(code(policy.checkJoinWaitlist(ride, false, false, 1, 0, NOW))).isEqualTo(ErrorCode.SEATS_AVAILABLE);
+        // ...but queueing for 2 seats when only 1 is free is allowed.
+        assertThat(policy.checkJoinWaitlist(ride, false, false, 2, 0, NOW)).isEmpty();
+    }
+
+    @Test
+    void waitlistRejectsMembersDuplicatesImpossibleRequestsAndOverflow() {
+        Ride ride = ride(1, CAMPUS, AIRPORT, NOW.plusHours(3), 4, 4);
+        assertThat(code(policy.checkJoinWaitlist(ride, true, false, 1, 0, NOW))).isEqualTo(ErrorCode.ALREADY_JOINED);
+        assertThat(code(policy.checkJoinWaitlist(ride, false, true, 1, 0, NOW))).isEqualTo(ErrorCode.ALREADY_WAITLISTED);
+        assertThat(code(policy.checkJoinWaitlist(ride, false, false, 4, 0, NOW))).isEqualTo(ErrorCode.INVALID_SEAT_COUNT);
+        assertThat(code(policy.checkJoinWaitlist(ride, false, false, 1, 2, NOW))).isEqualTo(ErrorCode.WAITLIST_FULL);
+    }
+
+    @Test
+    void departedRideCannotBeQueuedFor() {
+        Ride ride = ride(1, CAMPUS, AIRPORT, NOW.minusMinutes(1), 4, 4);
+        assertThat(code(policy.checkJoinWaitlist(ride, false, false, 1, 0, NOW)))
+                .isEqualTo(ErrorCode.RIDE_ALREADY_DEPARTED);
+    }
+
+    @Test
+    void actionsOfferQueueingOnFullRidesAndLeavingTheQueueToWaiters() {
+        Ride ride = ride(1, CAMPUS, AIRPORT, NOW.plusHours(3), 4, 4);
+        var outsider = policy.actionsFor(ride, 99L, null, new WaitlistStatus(1, null, null), NOW);
+        assertThat(outsider.canJoin()).isFalse();
+        assertThat(outsider.canJoinWaitlist()).isTrue();
+        assertThat(outsider.canLeaveWaitlist()).isFalse();
+
+        var waiter = policy.actionsFor(ride, 99L, null, new WaitlistStatus(1, 1, 1), NOW);
+        assertThat(waiter.canJoinWaitlist()).isFalse();
+        assertThat(waiter.canLeaveWaitlist()).isTrue();
     }
 }

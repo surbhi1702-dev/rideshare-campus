@@ -1,4 +1,5 @@
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useRealtime } from '../realtime/RealtimeContext.jsx';
 
@@ -6,9 +7,14 @@ export default function Layout() {
   const { user, isAdmin, logout } = useAuth();
   const { unread, toast, dismissToast } = useRealtime();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
 
-  const handleLogout = () => {
-    logout();
+  // On phones the menu is a drop-down; close it whenever the page changes.
+  useEffect(() => setMenuOpen(false), [location.pathname]);
+
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
@@ -20,7 +26,12 @@ export default function Layout() {
             <img src="/favicon.svg" alt="" width="26" height="26" />
             RideShare Campus
           </Link>
-          <nav className="nav" aria-label="Main">
+          <button type="button" className="menu-toggle" aria-expanded={menuOpen} aria-controls="main-menu"
+                  onClick={() => setMenuOpen((open) => !open)}>
+            {unread > 0 && !menuOpen && <span className="badge" aria-hidden="true">{unread}</span>}
+            {menuOpen ? 'Close' : 'Menu'}
+          </button>
+          <nav id="main-menu" className={`nav${menuOpen ? ' open' : ''}`} aria-label="Main">
             <NavLink to="/" end>Home</NavLink>
             <NavLink to="/rides/new">Offer a ride</NavLink>
             <NavLink to="/search">Find a ride</NavLink>
@@ -31,7 +42,7 @@ export default function Layout() {
             </NavLink>
             {isAdmin && <NavLink to="/admin">Admin</NavLink>}
           </nav>
-          <div className="topbar-user">
+          <div className={`topbar-user${menuOpen ? ' open' : ''}`}>
             <NavLink to="/profile" style={{ color: '#fff' }}>{user?.name}</NavLink>
             <button type="button" className="btn secondary small" onClick={handleLogout}>Log out</button>
           </div>

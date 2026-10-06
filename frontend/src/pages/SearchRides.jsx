@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
-import { Empty, ErrorAlert, Pager } from '../components/Feedback.jsx';
+import { Empty, ErrorAlert, Loading, Pager } from '../components/Feedback.jsx';
 import PlacePicker from '../components/PlacePicker.jsx';
 import { RideRow } from '../components/RideVisuals.jsx';
 import { todayIso } from '../utils/format.js';
@@ -127,13 +127,17 @@ function Browse() {
   const [filters, setFilters] = useState({ source: '', destination: '', date: '', minSeats: '' });
   const [page, setPage] = useState(null);
   const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const load = async (pageNumber = 0) => {
     setError(null);
+    setLoading(true);
     try {
       setPage(await api.browseRides({ ...filters, page: pageNumber, size: 10 }));
     } catch (e) {
       setError(e);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -167,8 +171,9 @@ function Browse() {
             <input id="b-seats" type="number" min={1} value={filters.minSeats} onChange={update('minSeats')} />
           </div>
         </div>
-        <button className="btn" type="submit">Show rides</button>
+        <button className="btn" type="submit" disabled={loading}>{loading ? 'Loading…' : 'Show rides'}</button>
       </form>
+      {loading && !page && <Loading label="Loading open rides…" />}
       {page && page.content.length === 0 && <Empty>No open rides match these filters.</Empty>}
       <div className="ride-list">
         {page?.content.map((ride) => <RideRow key={ride.id} ride={ride} />)}

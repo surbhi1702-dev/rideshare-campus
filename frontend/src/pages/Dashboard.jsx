@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useRealtime } from '../realtime/RealtimeContext.jsx';
-import { Empty, ErrorAlert } from '../components/Feedback.jsx';
+import { Empty, ErrorAlert, Loading } from '../components/Feedback.jsx';
 import { RideRow } from '../components/RideVisuals.jsx';
 
 export default function Dashboard() {
@@ -13,7 +13,8 @@ export default function Dashboard() {
   const [open, setOpen] = useState(null);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setError(null);
     Promise.all([api.myRides({ scope: 'upcoming', size: 3 }), api.browseRides({ size: 5 })])
       .then(([myPage, openPage]) => {
         setMine(myPage);
@@ -21,6 +22,11 @@ export default function Dashboard() {
       })
       .catch(setError);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+  const loading = !mine && !error;
 
   const firstName = user?.name?.split(' ')[0];
 
@@ -37,7 +43,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <ErrorAlert error={error} />
+      <ErrorAlert error={error} onRetry={load} />
 
       {unread > 0 && (
         <div className="alert success">
@@ -47,6 +53,7 @@ export default function Dashboard() {
 
       <section className="panel">
         <h2>Your upcoming rides</h2>
+        {loading && <Loading label="Loading your rides…" />}
         {mine && mine.content.length === 0 && (
           <Empty action={<Link to="/rides/new" className="btn">Offer a ride</Link>}>
             No upcoming rides yet. Post your trip and we will suggest students to share with.
@@ -60,6 +67,7 @@ export default function Dashboard() {
 
       <section className="panel">
         <h2>Leaving soon</h2>
+        {loading && <Loading label="Loading open rides…" />}
         {open && open.content.length === 0 && <Empty>No open rides right now.</Empty>}
         <div className="ride-list">
           {open?.content.map((ride) => <RideRow key={ride.id} ride={ride} />)}

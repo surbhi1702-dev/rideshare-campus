@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useRealtime } from '../realtime/RealtimeContext.jsx';
-import { Empty, ErrorAlert, Pager } from '../components/Feedback.jsx';
+import { Empty, ErrorAlert, Loading, Pager } from '../components/Feedback.jsx';
 import { formatDateTime } from '../utils/format.js';
 
 export default function Notifications() {
@@ -12,6 +12,7 @@ export default function Notifications() {
   const [error, setError] = useState(null);
 
   const load = useCallback((pageNumber = 0) => {
+    setError(null);
     api.notifications({ unreadOnly, page: pageNumber, size: 20 }).then(setPage).catch(setError);
   }, [unreadOnly]);
 
@@ -56,8 +57,9 @@ export default function Notifications() {
         <button type="button" aria-pressed={!unreadOnly} onClick={() => setUnreadOnly(false)}>All</button>
         <button type="button" aria-pressed={unreadOnly} onClick={() => setUnreadOnly(true)}>Unread</button>
       </div>
-      <ErrorAlert error={error} />
+      <ErrorAlert error={error} onRetry={() => load(0)} />
       <section className="panel">
+        {!page && !error && <Loading label="Loading notifications…" />}
         {page && page.content.length === 0 && <Empty>You're all caught up.</Empty>}
         {page?.content.map((n) => (
           <div key={n.id} className={`notification${n.read ? '' : ' unread'}`}>

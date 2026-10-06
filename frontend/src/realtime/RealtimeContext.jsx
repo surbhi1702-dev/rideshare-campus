@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Client } from '@stomp/stompjs';
-import { api } from '../api/client.js';
+import { api, getAccessToken, refreshSession } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 
 /**
@@ -12,12 +12,25 @@ import { useAuth } from '../auth/AuthContext.jsx';
 const RealtimeContext = createContext(null);
 
 function brokerUrl() {
+  // When the frontend host cannot proxy WebSockets (e.g. Vercel), point straight at the API.
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
 }
 
+/** True if the JWT expires within the next 30 seconds (or cannot be read). */
+function expiresSoon(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return payload.exp * 1000 - Date.now() < 30_000;
+  } catch {
+    return true;
+  }
+}
+
 export function RealtimeProvider({ children }) {
-  const { token } = useAuth();
+  const { user } = useAuth();
+  const userId = user?.id;
   const clientRef = useRef(null);
   const listenersRef = useRef(new Map()); // destination -> Set<callback>
   const subscriptionsRef = useRef(new Map()); // callback -> active STOMP subscription
@@ -35,7 +48,7 @@ export function RealtimeProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (!token) {
+    if (!userId) {
       setUnread(0);
       return undefined;
     }
@@ -43,11 +56,21 @@ export function RealtimeProvider({ children }) {
 
     const client = new Client({
       brokerURL: brokerUrl(),
-      connectHeaders: { Authorization: `Bearer ${token}` },
       reconnectDelay: 5000,
       heartbeatIncoming: 20000,
       heartbeatOutgoing: 20000,
     });
+    // Access tokens are short-lived: (re)connects always use a fresh one.
+    client.beforeConnect = async () => {
+      if (expiresSoon(getAccessToken())) {
+        try {
+          await refreshSession();
+        } catch {
+          /* REST calls will sign the user out */
+        }
+      }
+      client.connectHeaders = { Authorization: `Bearer ${getAccessToken()}` };
+    };
     client.onConnect = () => {
       setConnected(true);
       client.subscribe('/user/queue/notifications', (frame) => {
@@ -70,7 +93,7 @@ export function RealtimeProvider({ children }) {
       clientRef.current = null;
       setConnected(false);
     };
-  }, [token, refreshUnread, attach]);
+  }, [userId, refreshUnread, attach]);
 
   useEffect(() => {
     if (!toast) return undefined;

@@ -14,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -33,6 +34,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+// Tests register many users from one IP, so rate limiting is off. Set here rather than
+// only in application-test.yml because test properties also beat environment variables
+// and external config files on a developer's machine. RateLimitIntegrationTest turns it on.
+@TestPropertySource(properties = "app.rate-limit.enabled=false")
 public abstract class AbstractIntegrationTest {
 
     protected static final String PASSWORD = "Secret123";
@@ -52,8 +57,8 @@ public abstract class AbstractIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
-        jdbcTemplate.execute("TRUNCATE notifications, reports, user_blocks, ride_participants, rides, users "
-                + "RESTART IDENTITY CASCADE");
+        jdbcTemplate.execute("TRUNCATE idempotency_keys, refresh_tokens, ride_waitlist, notifications, reports, "
+                + "user_blocks, ride_participants, rides, users RESTART IDENTITY CASCADE");
     }
 
     // ---------------------------------------------------------------- users

@@ -113,6 +113,21 @@ a:hover { color: var(--ink); }
   font-weight: 700;
   text-align: center;
 }
+.menu-toggle {
+  display: none;
+  margin-left: auto;
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 0.95rem;
+  min-height: 44px;
+  cursor: pointer;
+}
+.menu-toggle .badge { margin: 0 8px 0 0; }
+
 .topbar-user {
   display: flex;
   align-items: center;
@@ -409,6 +424,47 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .topbar-user { width: 100%; justify-content: space-between; }
 }
 
+/* Phones: brand + Menu button; the nav opens as a full-width list with large tap targets. */
+@media (max-width: 720px) {
+  .topbar-inner { gap: 8px; }
+  .menu-toggle { display: inline-flex; align-items: center; }
+  .nav, .topbar-user { display: none; }
+  .nav.open { display: flex; flex-direction: column; width: 100%; flex-basis: 100%; padding-top: 4px; }
+  .nav.open a { padding: 12px 10px; font-size: 1rem; }
+  .topbar-user.open {
+    display: flex; width: 100%; justify-content: space-between;
+    padding: 10px 0 4px; border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  main { padding-top: 20px; }
+  .actions .btn, .actions select { min-height: 44px; }
+}
+
+/* Loading, retry and waitlist bits (V2). */
+.loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  color: var(--muted);
+}
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-top-color: var(--route);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.alert-action { margin-left: 12px; }
+.waitlist-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--route-tint);
+  color: var(--route-strong);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
@@ -422,4 +478,17 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   border: 0;
+}
+
+/* Phones: the group table becomes one card per person instead of scrolling sideways. */
+@media (max-width: 640px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  table.stack tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  table.stack td {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    border: 0; padding: 3px 0; text-align: right;
+  }
+  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: 0.85rem; text-align: left; }
+  table.stack td:first-child { font-weight: 700; }
 }

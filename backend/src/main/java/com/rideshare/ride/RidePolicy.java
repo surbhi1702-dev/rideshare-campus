@@ -5,9 +5,12 @@ import com.rideshare.common.exception.ApiException;
 import com.rideshare.common.exception.ConflictException;
 import com.rideshare.common.exception.ErrorCode;
 import com.rideshare.common.exception.ForbiddenOperationException;
+import com.rideshare.common.exception.InvalidRequestException;
 import com.rideshare.common.exception.RideFullException;
 import com.rideshare.config.AppProperties;
 import com.rideshare.ride.dto.RideActions;
+import com.rideshare.ride.waitlist.WaitlistProperties;
+import com.rideshare.ride.waitlist.WaitlistStatus;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -23,9 +26,11 @@ import java.util.Optional;
 public class RidePolicy {
 
     private final AppProperties.Ride rules;
+    private final int maxWaitlistSize;
 
-    public RidePolicy(AppProperties properties) {
+    public RidePolicy(AppProperties properties, WaitlistProperties waitlistProperties) {
         this.rules = properties.ride();
+        this.maxWaitlistSize = waitlistProperties.maxSize();
     }
 
     public Optional<ApiException> checkJoin(Ride ride, boolean alreadyMember, int seats, LocalDateTime now) {
@@ -38,6 +43,37 @@ public class RidePolicy {
         }
         if (ride.getAvailableSeats() < seats) {
             return Optional.of(new RideFullException(seats, ride.getAvailableSeats()));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Queueing only makes sense when the ride is full for the requested seats and
+     * the request could ever be satisfied (the creator always holds at least one seat).
+     */
+    public Optional<ApiException> checkJoinWaitlist(Ride ride, boolean alreadyMember, boolean alreadyWaiting,
+                                                    int seats, long queueSize, LocalDateTime now) {
+        if (alreadyMember) {
+            return Optional.of(new AlreadyJoinedException());
+        }
+        if (alreadyWaiting) {
+            return Optional.of(new ConflictException(ErrorCode.ALREADY_WAITLISTED, "You are already on this waitlist"));
+        }
+        Optional<ApiException> state = checkStillEditable(ride, now);
+        if (state.isPresent()) {
+            return state;
+        }
+        if (seats > ride.getTotalSeats() - 1) {
+            return Optional.of(new InvalidRequestException(ErrorCode.INVALID_SEAT_COUNT,
+                    "This ride can never have %d seats free".formatted(seats)));
+        }
+        if (ride.getAvailableSeats() >= seats) {
+            return Optional.of(new ConflictException(ErrorCode.SEATS_AVAILABLE,
+                    "Seats are available right now - join the ride directly"));
+        }
+        if (queueSize >= maxWaitlistSize) {
+            return Optional.of(new ConflictException(ErrorCode.WAITLIST_FULL,
+                    "The waitlist for this ride is full (%d students)".formatted(maxWaitlistSize)));
         }
         return Optional.empty();
     }
@@ -94,15 +130,19 @@ public class RidePolicy {
         return Optional.empty();
     }
 
-    public RideActions actionsFor(Ride ride, Long viewerId, RideParticipant viewerParticipation, LocalDateTime now) {
+    public RideActions actionsFor(Ride ride, Long viewerId, RideParticipant viewerParticipation,
+                                  WaitlistStatus waitlist, LocalDateTime now) {
         boolean member = viewerParticipation != null;
+        boolean waiting = waitlist.viewerIsWaiting();
         return new RideActions(
-                checkJoin(ride, member, 1, now).isEmpty(),
+                !waiting && checkJoin(ride, member, 1, now).isEmpty(),
                 member && checkLeave(ride, viewerParticipation, now).isEmpty(),
                 checkEdit(ride, viewerId, now).isEmpty(),
                 checkCancel(ride, viewerId).isEmpty(),
                 checkStart(ride, viewerId, now).isEmpty(),
-                checkComplete(ride, viewerId).isEmpty());
+                checkComplete(ride, viewerId).isEmpty(),
+                checkJoinWaitlist(ride, member, waiting, 1, waitlist.size(), now).isEmpty(),
+                waiting);
     }
 
     private Optional<ApiException> checkStillEditable(Ride ride, LocalDateTime now) {

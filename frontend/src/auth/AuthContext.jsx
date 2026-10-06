@@ -1,50 +1,54 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, getToken, setToken, setUnauthorizedHandler } from '../api/client.js';
+import { api, refreshSession, setAccessToken, setSessionExpiredHandler } from '../api/client.js';
 
 const AuthContext = createContext(null);
 
+/**
+ * Session state. Nothing is persisted in the browser: on page load the app asks
+ * /api/auth/refresh, which works only if the httpOnly refresh cookie is present.
+ */
 export function AuthProvider({ children }) {
-  const [token, setTokenState] = useState(getToken);
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(Boolean(getToken()));
+  const [loading, setLoading] = useState(true);
 
-  const logout = useCallback(() => {
-    setToken(null);
-    setTokenState(null);
+  const clearSession = useCallback(() => {
+    setAccessToken(null);
     setUser(null);
   }, []);
 
-  // Any 401 on an authenticated call (expired token, deactivated account) signs out.
-  useEffect(() => setUnauthorizedHandler(logout), [logout]);
+  // A failed silent refresh (session expired, logged out elsewhere, account disabled) signs out.
+  useEffect(() => setSessionExpiredHandler(clearSession), [clearSession]);
 
   useEffect(() => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
-    setLoading(true);
-    api.me()
-      .then((profile) => !cancelled && setUser(profile))
-      .catch(() => !cancelled && logout())
+    refreshSession()
+      .then((auth) => !cancelled && setUser(auth.user))
+      .catch(() => {})
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [token, logout]);
+  }, []);
 
   const acceptAuth = useCallback((auth) => {
-    setToken(auth.accessToken);
-    setTokenState(auth.accessToken);
+    setAccessToken(auth.accessToken);
     setUser(auth.user);
   }, []);
 
   const login = useCallback(async (email, password) => acceptAuth(await api.login({ email, password })), [acceptAuth]);
   const register = useCallback(async (body) => acceptAuth(await api.register(body)), [acceptAuth]);
+  const logout = useCallback(async () => {
+    try {
+      await api.logout();
+    } catch {
+      /* already logged out server-side; clear locally anyway */
+    }
+    clearSession();
+  }, [clearSession]);
 
   const value = useMemo(
-    () => ({ token, user, setUser, loading, login, register, logout, isAdmin: user?.role === 'ADMIN' }),
-    [token, user, loading, login, register, logout],
+    () => ({ user, setUser, loading, login, register, logout, isAdmin: user?.role === 'ADMIN' }),
+    [user, loading, login, register, logout],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useRealtime } from '../realtime/RealtimeContext.jsx';
-import { ErrorAlert, SuccessAlert } from '../components/Feedback.jsx';
+import { ErrorAlert, Loading, SuccessAlert } from '../components/Feedback.jsx';
 import { RouteStrip, SeatDots, StatusPill, When } from '../components/RideVisuals.jsx';
 import { formatDateTime, formatMoney } from '../utils/format.js';
 
@@ -26,6 +26,7 @@ export default function RideDetails() {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [seats, setSeats] = useState(1);
+  const [waitSeats, setWaitSeats] = useState(1);
   const [reporting, setReporting] = useState(null);
 
   const load = useCallback(() => api.ride(id).then(setDetail).catch(setError), [id]);
@@ -54,9 +55,11 @@ export default function RideDetails() {
     }
   };
 
-  if (!detail) return error ? <ErrorAlert error={error} /> : <p className="muted">Loading ride…</p>;
+  if (!detail) return error ? <ErrorAlert error={error} onRetry={() => { setError(null); load(); }} /> : <Loading label="Loading ride…" />;
 
   const { ride, actions, participants, fareSplit } = detail;
+  const waitlist = detail.waitlist || { size: 0 };
+  const maxWaitSeats = Math.max(1, Math.min(ride.totalSeats - 1, 4));
   const isMember = Boolean(detail.viewerRole);
 
   return (
@@ -130,6 +133,28 @@ export default function RideDetails() {
                 </button>
               </>
             )}
+            {actions.canJoinWaitlist && (
+              <>
+                <label htmlFor="wait-seats" className="small">Seats</label>
+                <select id="wait-seats" value={waitSeats} onChange={(e) => setWaitSeats(Number(e.target.value))}
+                        style={{ width: 70 }}>
+                  {Array.from({ length: maxWaitSeats }, (_, i) => i + 1).map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+                <button type="button" className="btn" disabled={busy}
+                        onClick={() => run(() => api.joinWaitlist(id, { seats: waitSeats }),
+                          'You are on the waitlist. We will add you automatically when a seat frees up.')}>
+                  Join waitlist
+                </button>
+              </>
+            )}
+            {actions.canLeaveWaitlist && (
+              <button type="button" className="btn secondary" disabled={busy}
+                      onClick={() => run(() => api.leaveWaitlist(id), 'You left the waitlist.')}>
+                Leave waitlist
+              </button>
+            )}
             {isMember && (
               <Link to={`/rides/${id}/matches`} className="btn secondary">See similar rides</Link>
             )}
@@ -157,6 +182,24 @@ export default function RideDetails() {
               </button>
             )}
           </div>
+          {waitlist.viewerPosition && (
+            <p className="waitlist-note" role="status">
+              You are <strong>#{waitlist.viewerPosition}</strong> on the waitlist
+              {waitlist.viewerSeats > 1 ? ` (for ${waitlist.viewerSeats} seats)` : ''}. You will be added
+              automatically when a seat frees up, and we will notify you.
+            </p>
+          )}
+          {actions.canJoinWaitlist && (
+            <p className="muted small" style={{ marginTop: 12 }}>
+              This ride is full{waitlist.size > 0 ? ` and ${waitlist.size} ${waitlist.size === 1 ? 'student is' : 'students are'} waiting` : ''}.
+              Join the waitlist to get the next free seat.
+            </p>
+          )}
+          {isMember && waitlist.size > 0 && (
+            <p className="muted small" style={{ marginTop: 12 }}>
+              {waitlist.size} {waitlist.size === 1 ? 'student is' : 'students are'} on the waitlist for this ride.
+            </p>
+          )}
           {!Object.values(actions).some(Boolean) && !isMember && (
             <p className="muted small" style={{ marginTop: 12 }}>This ride can no longer be joined.</p>
           )}
@@ -170,7 +213,7 @@ export default function RideDetails() {
         )}
         {isMember && (
           <div className="table-wrap">
-            <table>
+            <table className="stack">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -184,16 +227,18 @@ export default function RideDetails() {
               <tbody>
                 {participants.map((p) => (
                   <tr key={p.userId}>
-                    <td>
+                    <td data-label="Name">
+                      <span>
                       {p.name}
                       {p.role === 'CREATOR' && <span className="status">Creator</span>}
                       {p.userId === user.id && <span className="muted small"> (you)</span>}
+                      </span>
                     </td>
-                    <td>{p.phoneNumber ? <a href={`tel:${p.phoneNumber}`}>{p.phoneNumber}</a> : <span className="muted">Not shared</span>}</td>
-                    <td className="num">{p.seatsBooked}</td>
-                    <td className="num">{formatMoney(p.estimatedShare)}</td>
-                    <td className="small muted">{formatDateTime(p.joinedAt)}</td>
-                    <td>
+                    <td data-label="Phone">{p.phoneNumber ? <a href={`tel:${p.phoneNumber}`}>{p.phoneNumber}</a> : <span className="muted">Not shared</span>}</td>
+                    <td className="num" data-label="Seats">{p.seatsBooked}</td>
+                    <td className="num" data-label="Share">{formatMoney(p.estimatedShare)}</td>
+                    <td className="small muted" data-label="Joined">{formatDateTime(p.joinedAt)}</td>
+                    <td data-label="">
                       {p.userId !== user.id && (
                         <div className="actions">
                           <button type="button" className="btn link small" onClick={() => setReporting(p)}>Report</button>

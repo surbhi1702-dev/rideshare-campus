@@ -5,7 +5,11 @@ import com.rideshare.common.exception.ErrorCode;
 import com.rideshare.notification.NotificationService;
 import com.rideshare.notification.NotificationType;
 import com.rideshare.notification.RealtimePublisher;
+import com.rideshare.common.idempotency.IdempotencyService;
 import com.rideshare.ride.dto.JoinRideRequest;
+import com.rideshare.ride.waitlist.WaitlistEntryRepository;
+import com.rideshare.ride.waitlist.WaitlistPromoter;
+import com.rideshare.ride.waitlist.WaitlistProperties;
 import com.rideshare.safety.BlockLookup;
 import com.rideshare.user.User;
 import com.rideshare.user.UserService;
@@ -62,6 +66,12 @@ class RideParticipationServiceTest {
     private RealtimePublisher realtimePublisher;
     @Mock
     private RideService rideService;
+    @Mock
+    private WaitlistEntryRepository waitlistRepository;
+    @Mock
+    private WaitlistPromoter waitlistPromoter;
+    @Mock
+    private IdempotencyService idempotencyService;
 
     private RideParticipationService service;
     private Ride ride;
@@ -71,8 +81,9 @@ class RideParticipationServiceTest {
     void setUp() {
         Clock clock = Clock.fixed(ZonedDateTime.of(NOW, ZONE).toInstant(), ZONE);
         service = new RideParticipationService(rideLocker, participantRepository,
-                new RidePolicy(RideValidatorTest.properties()), overlapGuard, userService, blockLookup,
-                notificationService, realtimePublisher, rideService, clock);
+                new RidePolicy(RideValidatorTest.properties(), new WaitlistProperties(20)), overlapGuard, userService,
+                blockLookup, notificationService, realtimePublisher, rideService, waitlistRepository, waitlistPromoter,
+                idempotencyService, clock);
         ride = ride(1L, CAMPUS, AIRPORT, NOW.plusHours(4), 4, 3);
         when(userService.getActiveUser(7L)).thenReturn(joiner);
         when(rideLocker.lock(1L)).thenReturn(ride);
@@ -136,5 +147,19 @@ class RideParticipationServiceTest {
         assertThat(full.getStatus()).isEqualTo(RideStatus.OPEN);
         verify(participantRepository).delete(membership);
         verify(notificationService).notifyUsers(eq(List.of(1002L)), eq(NotificationType.RIDE_LEFT), anyString(), eq(2L));
+        // Freed seats are offered to the waitlist inside the same (locked) operation.
+        verify(waitlistPromoter).promote(eq(full), any());
+    }
+
+    @Test
+    void retriedJoinWithTheSameKeyDoesNotBookAgain() {
+        when(idempotencyService.alreadyProcessed(7L, "key-12345", com.rideshare.common.idempotency.IdempotentOperation.JOIN_RIDE, 1L))
+                .thenReturn(true);
+
+        service.join(1L, 7L, new JoinRideRequest(1, null), "key-12345");
+
+        verify(participantRepository, never()).save(any());
+        assertThat(ride.getOccupiedSeats()).isEqualTo(3);
+        verify(rideService).detailFor(ride, 7L);
     }
 }

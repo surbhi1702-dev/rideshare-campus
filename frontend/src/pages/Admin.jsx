@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
-import { ErrorAlert, Pager } from '../components/Feedback.jsx';
+import { ErrorAlert, Pager, Loading } from '../components/Feedback.jsx';
 import { formatDateTime, formatMoney, statusLabel } from '../utils/format.js';
 
 const RIDE_STATUSES = ['', 'OPEN', 'FULL', 'STARTED', 'COMPLETED', 'CANCELLED'];
@@ -37,7 +37,7 @@ function Overview() {
     api.adminStats().then(setStats).catch(setError);
   }, []);
   if (error) return <ErrorAlert error={error} />;
-  if (!stats) return <p className="muted">Loading…</p>;
+  if (!stats) return <Loading label="Loading admin data…" />;
   const tiles = [
     [stats.totalUsers, 'registered users'],
     [stats.activeUsers, 'active users'],

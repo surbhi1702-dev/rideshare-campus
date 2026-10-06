@@ -1,29 +1,37 @@
-// Thin fetch wrapper: adds the JWT, parses JSON and turns error bodies
+// Thin fetch wrapper: adds the access token, parses JSON and turns error bodies
 // (the backend's ApiError contract) into ApiRequestError instances.
+//
+// Sessions (V2):
+//  - The short-lived access token lives only in memory (this module), never in
+//    localStorage, so an XSS bug cannot read a long-lived credential.
+//  - The refresh token is an httpOnly cookie the browser sends to /api/auth only.
+//  - A 401 on a normal call triggers one silent refresh (shared by all callers that
+//    failed at the same time) and a single retry.
 
-const TOKEN_KEY = 'rideshare.token';
+const API_BASE = `${import.meta.env.VITE_API_URL || ''}/api`;
+const LEGACY_TOKEN_KEY = 'rideshare.token';
 
-let onUnauthorized = () => {};
+let accessToken = null;
+let onSessionExpired = () => {};
+let refreshInFlight = null;
 
-export function setUnauthorizedHandler(handler) {
-  onUnauthorized = handler;
+// V1 kept the token in localStorage; remove it once so it can't be reused.
+try {
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+} catch {
+  /* storage unavailable */
 }
 
-export function getToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
+export function setSessionExpiredHandler(handler) {
+  onSessionExpired = handler;
 }
 
-export function setToken(token) {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* storage unavailable (private mode): token lives only in memory for this tab */
-  }
+export function getAccessToken() {
+  return accessToken;
+}
+
+export function setAccessToken(token) {
+  accessToken = token || null;
 }
 
 export class ApiRequestError extends Error {
@@ -32,6 +40,7 @@ export class ApiRequestError extends Error {
     this.status = status;
     this.code = body?.code || 'UNKNOWN';
     this.fieldErrors = body?.fieldErrors || [];
+    this.retryAfter = body?.retryAfter;
   }
 }
 
@@ -45,17 +54,17 @@ function buildQuery(params) {
   return text ? `?${text}` : '';
 }
 
-export async function request(path, { method = 'GET', body, params } = {}) {
-  const headers = { Accept: 'application/json' };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+async function send(path, { method = 'GET', body, params, headers: extraHeaders } = {}) {
+  const headers = { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...extraHeaders };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   let response;
   try {
-    response = await fetch(`/api${path}${buildQuery(params)}`, {
+    response = await fetch(`${API_BASE}${path}${buildQuery(params)}`, {
       method,
       headers,
+      credentials: 'include',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -64,13 +73,89 @@ export async function request(path, { method = 'GET', body, params } = {}) {
 
   if (response.status === 204) return null;
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
   if (!response.ok) {
-    if (response.status === 401 && token) onUnauthorized();
-    throw new ApiRequestError(response.status, data);
+    const error = new ApiRequestError(response.status, data);
+    const retryAfter = response.headers?.get?.('Retry-After');
+    if (retryAfter) error.retryAfter = Number(retryAfter);
+    throw error;
   }
   return data;
+}
+
+/**
+ * Exchanges the refresh cookie for a new access token. Concurrent callers share
+ * one request, so a page firing five calls with an expired token refreshes once.
+ * If two tabs refreshed with the same cookie at the same instant, the loser gets a
+ * 401 but the browser already holds the winner's new cookie: retry once.
+ */
+export function refreshSession() {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        return await send('/auth/refresh', { method: 'POST' });
+      } catch (error) {
+        if (error.status !== 401) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return send('/auth/refresh', { method: 'POST' });
+      }
+    })()
+      .then((auth) => {
+        setAccessToken(auth.accessToken);
+        return auth;
+      })
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout'];
+
+export async function request(path, options = {}) {
+  try {
+    return await send(path, options);
+  } catch (error) {
+    if (error.status !== 401 || NO_REFRESH_PATHS.includes(path)) throw error;
+    try {
+      await refreshSession();
+    } catch {
+      setAccessToken(null);
+      onSessionExpired();
+      throw error;
+    }
+    return send(path, options);
+  }
+}
+
+function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * For "join" style requests: one key per button press, reused for retries. If the
+ * network drops after the server booked the seat, the retry gets the same result
+ * instead of a second booking or a confusing "already joined".
+ */
+export async function requestWithRetry(path, options, { attempts = 3, delayMs = 600 } = {}) {
+  const key = newIdempotencyKey();
+  const withKey = { ...options, headers: { ...options.headers, 'Idempotency-Key': key } };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await request(path, withKey);
+    } catch (error) {
+      const transient = error.status === 0 || error.status >= 502;
+      if (!transient || attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
 }
 
 // ------------------------------------------------------------------ endpoints
@@ -78,6 +163,7 @@ export async function request(path, { method = 'GET', body, params } = {}) {
 export const api = {
   register: (body) => request('/auth/register', { method: 'POST', body }),
   login: (body) => request('/auth/login', { method: 'POST', body }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
 
   me: () => request('/users/me'),
   updateMe: (body) => request('/users/me', { method: 'PUT', body }),
@@ -92,8 +178,10 @@ export const api = {
   ride: (id) => request(`/rides/${id}`),
   searchRides: (params) => request('/rides/search', { params }),
   matchesForRide: (id) => request(`/rides/${id}/matches`),
-  joinRide: (id, body = { seats: 1 }) => request(`/rides/${id}/join`, { method: 'POST', body }),
+  joinRide: (id, body = { seats: 1 }) => requestWithRetry(`/rides/${id}/join`, { method: 'POST', body }),
   leaveRide: (id) => request(`/rides/${id}/leave`, { method: 'POST' }),
+  joinWaitlist: (id, body = { seats: 1 }) => requestWithRetry(`/rides/${id}/waitlist`, { method: 'POST', body }),
+  leaveWaitlist: (id) => request(`/rides/${id}/waitlist`, { method: 'DELETE' }),
   cancelRide: (id) => request(`/rides/${id}/cancel`, { method: 'POST' }),
   startRide: (id) => request(`/rides/${id}/start`, { method: 'POST' }),
   completeRide: (id) => request(`/rides/${id}/complete`, { method: 'POST' }),

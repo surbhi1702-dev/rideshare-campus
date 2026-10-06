@@ -1,0 +1,60 @@
+# Render Blueprint for the backend + database (frontend is on Vercel).
+# Render dashboard -> New -> Blueprint -> pick this repo. See docs/DEPLOYMENT.md.
+#
+# Free tier notes: the web service sleeps after ~15 minutes without traffic (the
+# first request afterwards takes a while), and a free Postgres database expires
+# after a limited period unless upgraded. Fine for a demo, not for real users.
+
+databases:
+  - name: rideshare-db
+    plan: free
+    databaseName: rideshare
+    user: rideshare
+
+services:
+  - type: web
+    name: rideshare-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /actuator/health
+    # Deploys are triggered by GitHub Actions after the tests pass (deploy hook).
+    autoDeploy: false
+    envVars:
+      - key: DB_HOST
+        fromDatabase: { name: rideshare-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: rideshare-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: rideshare-db, property: database }
+      - key: DB_USERNAME
+        fromDatabase: { name: rideshare-db, property: user }
+      - key: DB_PASSWORD
+        fromDatabase: { name: rideshare-db, property: password }
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRATION_MINUTES
+        value: "15"
+      # The browser reaches the API through Vercel's /api rewrite (same origin), so
+      # the refresh cookie is first-party. It must be Secure on HTTPS.
+      - key: REFRESH_COOKIE_SECURE
+        value: "true"
+      - key: FORWARD_HEADERS_STRATEGY
+        value: framework
+      # Your Vercel URL, e.g. https://rideshare-campus.vercel.app (used for CORS
+      # and for the WebSocket, which connects to Render directly).
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ALLOWED_EMAIL_DOMAINS
+        value: iitbbs.ac.in
+      - key: APP_TIME_ZONE
+        value: Asia/Kolkata
+      - key: SPRING_PROFILES_ACTIVE
+        value: ""

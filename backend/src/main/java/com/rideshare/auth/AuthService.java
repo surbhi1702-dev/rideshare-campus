@@ -3,6 +3,7 @@ package com.rideshare.auth;
 import com.rideshare.auth.dto.AuthResponse;
 import com.rideshare.auth.dto.LoginRequest;
 import com.rideshare.auth.dto.RegisterRequest;
+import com.rideshare.auth.session.RefreshTokenService;
 import com.rideshare.common.exception.AuthenticationFailedException;
 import com.rideshare.common.exception.ConflictException;
 import com.rideshare.common.exception.ErrorCode;
@@ -33,20 +34,23 @@ public class AuthService {
     private final JwtService jwtService;
     private final EmailDomainValidator emailDomainValidator;
     private final UserMapper userMapper;
+    private final RefreshTokenService refreshTokenService;
     private final String dummyHash;
 
     public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtService jwtService,
-                       EmailDomainValidator emailDomainValidator, UserMapper userMapper) {
+                       EmailDomainValidator emailDomainValidator, UserMapper userMapper,
+                       RefreshTokenService refreshTokenService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.emailDomainValidator = emailDomainValidator;
         this.userMapper = userMapper;
+        this.refreshTokenService = refreshTokenService;
         this.dummyHash = passwordEncoder.encode("timing-equalisation-only");
     }
 
     @Transactional
-    public AuthResponse register(RegisterRequest request) {
+    public AuthResult register(RegisterRequest request) {
         String email = normalizeEmail(request.email());
         emailDomainValidator.requireAllowed(email);
         if (userRepository.existsByEmailIgnoreCase(email)) {
@@ -61,11 +65,11 @@ public class AuthService {
             throw new ConflictException(ErrorCode.EMAIL_ALREADY_REGISTERED, "An account with this email already exists");
         }
         log.info("Registered student {}", user.getId());
-        return toAuthResponse(user);
+        return startSession(user);
     }
 
-    @Transactional(readOnly = true)
-    public AuthResponse login(LoginRequest request) {
+    @Transactional
+    public AuthResult login(LoginRequest request) {
         User user = userRepository.findByEmailIgnoreCase(normalizeEmail(request.email())).orElse(null);
         // Always run one BCrypt comparison so response time does not reveal whether the email exists.
         String hashToCheck = user != null ? user.getPasswordHash() : dummyHash;
@@ -78,12 +82,30 @@ public class AuthService {
             throw new ForbiddenOperationException(ErrorCode.ACCOUNT_DISABLED,
                     "This account has been deactivated. Contact the administrator.");
         }
-        return toAuthResponse(user);
+        return startSession(user);
     }
 
-    private AuthResponse toAuthResponse(User user) {
+    /** Silent re-login from the refresh cookie: new short-lived access token plus a rotated refresh token. */
+    public AuthResult refresh(String refreshToken) {
+        RefreshTokenService.Rotation rotation = refreshTokenService.rotate(refreshToken);
+        return new AuthResult(accessFor(rotation.user()), rotation.next());
+    }
+
+    public void logout(String refreshToken) {
+        refreshTokenService.endSession(refreshToken);
+    }
+
+    private AuthResult startSession(User user) {
+        return new AuthResult(accessFor(user), refreshTokenService.startSession(user));
+    }
+
+    private AuthResponse accessFor(User user) {
         JwtService.IssuedToken token = jwtService.issue(user);
         return new AuthResponse(token.token(), TOKEN_TYPE, token.expiresAt(), userMapper.toProfile(user));
+    }
+
+    /** The JSON body plus the refresh token the controller puts into the httpOnly cookie. */
+    public record AuthResult(AuthResponse body, RefreshTokenService.IssuedRefreshToken refreshToken) {
     }
 
     private static String normalizeEmail(String email) {

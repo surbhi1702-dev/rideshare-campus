@@ -2,6 +2,7 @@ package com.rideshare.ride;
 
 import com.rideshare.common.dto.PageResponse;
 import com.rideshare.common.dto.Paging;
+import com.rideshare.common.idempotency.IdempotencyService;
 import com.rideshare.ride.dto.CreateRideRequest;
 import com.rideshare.ride.dto.JoinRideRequest;
 import com.rideshare.ride.dto.RideBrowseFilter;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -106,11 +108,13 @@ public class RideController {
 
     @PostMapping("/{id}/join")
     @Operation(summary = "Join a ride",
-            description = "Concurrency-safe. 409 RIDE_FULL, ALREADY_JOINED, RIDE_CANCELLED, RIDE_COMPLETED, "
+            description = "Concurrency-safe; send an Idempotency-Key header to make retries safe. 409 RIDE_FULL, ALREADY_JOINED, RIDE_CANCELLED, RIDE_COMPLETED, "
                     + "RIDE_ALREADY_DEPARTED, OVERLAPPING_RIDE; 403 INTERACTION_BLOCKED.")
     public RideDetailResponse join(@AuthenticationPrincipal AuthenticatedUser currentUser, @PathVariable Long id,
-                                   @Valid @RequestBody(required = false) JoinRideRequest request) {
-        return participationService.join(id, currentUser.id(), request);
+                                   @Valid @RequestBody(required = false) JoinRideRequest request,
+                                   @RequestHeader(name = IdempotencyService.HEADER, required = false)
+                                   String idempotencyKey) {
+        return participationService.join(id, currentUser.id(), request, idempotencyKey);
     }
 
     @PostMapping("/{id}/leave")

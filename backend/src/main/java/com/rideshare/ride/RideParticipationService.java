@@ -1,6 +1,8 @@
 package com.rideshare.ride;
 
 import com.rideshare.common.exception.ConflictException;
+import com.rideshare.common.idempotency.IdempotencyService;
+import com.rideshare.common.idempotency.IdempotentOperation;
 import com.rideshare.common.exception.ErrorCode;
 import com.rideshare.common.exception.ForbiddenOperationException;
 import com.rideshare.common.exception.InvalidRequestException;
@@ -10,6 +12,8 @@ import com.rideshare.notification.RealtimePublisher;
 import com.rideshare.notification.dto.RideEvent;
 import com.rideshare.ride.dto.JoinRideRequest;
 import com.rideshare.ride.dto.RideDetailResponse;
+import com.rideshare.ride.waitlist.WaitlistEntryRepository;
+import com.rideshare.ride.waitlist.WaitlistPromoter;
 import com.rideshare.safety.BlockLookup;
 import com.rideshare.user.User;
 import com.rideshare.user.UserService;
@@ -34,6 +38,11 @@ import java.util.Set;
  * RIDE_FULL. The unique (ride_id, user_id) constraint and the
  * {@code occupied_seats <= total_seats} CHECK constraint back this up in the
  * database itself.
+ *
+ * <h2>Waitlist and retries</h2>
+ * Leaving hands the freed seats to the waitlist ({@link WaitlistPromoter}) while
+ * the row is still locked, so nobody can grab them in between. Joining accepts an
+ * Idempotency-Key ({@link IdempotencyService}) so a retried request never books twice.
  */
 @Service
 public class RideParticipationService {
@@ -49,12 +58,17 @@ public class RideParticipationService {
     private final NotificationService notificationService;
     private final RealtimePublisher realtimePublisher;
     private final RideService rideService;
+    private final WaitlistEntryRepository waitlistRepository;
+    private final WaitlistPromoter waitlistPromoter;
+    private final IdempotencyService idempotencyService;
     private final Clock clock;
 
     public RideParticipationService(RideLocker rideLocker, RideParticipantRepository participantRepository,
                                     RidePolicy ridePolicy, OverlapGuard overlapGuard, UserService userService,
                                     BlockLookup blockLookup, NotificationService notificationService,
-                                    RealtimePublisher realtimePublisher, RideService rideService, Clock clock) {
+                                    RealtimePublisher realtimePublisher, RideService rideService,
+                                    WaitlistEntryRepository waitlistRepository, WaitlistPromoter waitlistPromoter,
+                                    IdempotencyService idempotencyService, Clock clock) {
         this.rideLocker = rideLocker;
         this.participantRepository = participantRepository;
         this.ridePolicy = ridePolicy;
@@ -64,11 +78,23 @@ public class RideParticipationService {
         this.notificationService = notificationService;
         this.realtimePublisher = realtimePublisher;
         this.rideService = rideService;
+        this.waitlistRepository = waitlistRepository;
+        this.waitlistPromoter = waitlistPromoter;
+        this.idempotencyService = idempotencyService;
         this.clock = clock;
     }
 
     @Transactional
     public RideDetailResponse join(Long rideId, Long userId, JoinRideRequest request) {
+        return join(rideId, userId, request, null);
+    }
+
+    /**
+     * @param idempotencyKey optional; a repeated key for the same ride returns the current
+     *                       state instead of joining again
+     */
+    @Transactional
+    public RideDetailResponse join(Long rideId, Long userId, JoinRideRequest request, String idempotencyKey) {
         User user = userService.getActiveUser(userId);
         int seats = request == null ? 1 : request.seatsOrDefault();
         Long replaceRideId = request == null ? null : request.replaceRideId();
@@ -79,6 +105,9 @@ public class RideParticipationService {
         LockedRides locked = lockInIdOrder(rideId, replaceRideId);
         Ride ride = locked.target();
         LocalDateTime now = LocalDateTime.now(clock);
+        if (idempotencyService.alreadyProcessed(userId, idempotencyKey, IdempotentOperation.JOIN_RIDE, rideId)) {
+            return rideService.detailFor(ride, userId);
+        }
 
         boolean alreadyMember = participantRepository.existsByRideIdAndUserId(rideId, userId);
         ridePolicy.checkJoin(ride, alreadyMember, seats, now).ifPresent(e -> {
@@ -100,6 +129,9 @@ public class RideParticipationService {
 
         participantRepository.save(new RideParticipant(ride, user, seats, ParticipantRole.MEMBER, now));
         ride.occupySeats(seats);
+        // Joining directly (e.g. a seat freed that their request did not fit before) ends their queue spot.
+        waitlistRepository.deleteByRideIdAndUserId(rideId, userId);
+        idempotencyService.record(userId, idempotencyKey, IdempotentOperation.JOIN_RIDE, rideId);
         participantRepository.flush();
         log.info("User {} joined ride {} with {} seat(s) -> {}", userId, rideId, seats, RideMessages.seats(ride));
 
@@ -131,9 +163,13 @@ public class RideParticipationService {
         log.info("User {} left ride {} -> {}", userId, rideId, RideMessages.seats(ride));
 
         List<Long> remaining = participantRepository.findUserIdsByRideId(rideId);
+        // Still holding the row lock: the freed seats go to the queue before anyone else can take them.
+        List<Long> promoted = waitlistPromoter.promote(ride, LocalDateTime.now(clock));
+        String seatsNow = promoted.isEmpty()
+                ? "%d seat(s) free again".formatted(ride.getAvailableSeats())
+                : "the seat went to the next student on the waitlist";
         notificationService.notifyUsers(remaining, NotificationType.RIDE_LEFT,
-                "%s left %s - %d seat(s) free again.".formatted(leaver.getDisplayName(), RideMessages.describe(ride),
-                        ride.getAvailableSeats()), rideId);
+                "%s left %s - %s.".formatted(leaver.getDisplayName(), RideMessages.describe(ride), seatsNow), rideId);
         realtimePublisher.publishRideEvent(ride, RideEvent.RideEventType.PARTICIPANT_LEFT);
         return rideService.detailFor(ride, userId);
     }

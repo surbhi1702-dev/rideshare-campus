@@ -13,6 +13,10 @@ import com.rideshare.ride.dto.RideBrowseFilter;
 import com.rideshare.ride.dto.RideDetailResponse;
 import com.rideshare.ride.dto.RideSummaryResponse;
 import com.rideshare.ride.dto.UpdateRideRequest;
+import com.rideshare.ride.waitlist.WaitlistEntry;
+import com.rideshare.ride.waitlist.WaitlistEntryRepository;
+import com.rideshare.ride.waitlist.WaitlistPromoter;
+import com.rideshare.ride.waitlist.WaitlistStatus;
 import com.rideshare.safety.BlockLookup;
 import com.rideshare.user.User;
 import com.rideshare.user.UserService;
@@ -49,13 +53,16 @@ public class RideService {
     private final NotificationService notificationService;
     private final RealtimePublisher realtimePublisher;
     private final MatchSuggestionNotifier matchSuggestionNotifier;
+    private final WaitlistEntryRepository waitlistRepository;
+    private final WaitlistPromoter waitlistPromoter;
     private final Clock clock;
 
     public RideService(RideRepository rideRepository, RideParticipantRepository participantRepository,
                        RideLocker rideLocker, RideValidator rideValidator, RidePolicy ridePolicy, RideMapper rideMapper,
                        OverlapGuard overlapGuard, UserService userService, BlockLookup blockLookup,
                        NotificationService notificationService, RealtimePublisher realtimePublisher,
-                       MatchSuggestionNotifier matchSuggestionNotifier, Clock clock) {
+                       MatchSuggestionNotifier matchSuggestionNotifier, WaitlistEntryRepository waitlistRepository,
+                       WaitlistPromoter waitlistPromoter, Clock clock) {
         this.rideRepository = rideRepository;
         this.participantRepository = participantRepository;
         this.rideLocker = rideLocker;
@@ -68,6 +75,8 @@ public class RideService {
         this.notificationService = notificationService;
         this.realtimePublisher = realtimePublisher;
         this.matchSuggestionNotifier = matchSuggestionNotifier;
+        this.waitlistRepository = waitlistRepository;
+        this.waitlistPromoter = waitlistPromoter;
         this.clock = clock;
     }
 
@@ -120,6 +129,8 @@ public class RideService {
 
         ride.applyDetails(details);
         ride.refreshCapacityStatus();
+        // More seats than before: the queue gets them first, still under the row lock.
+        waitlistPromoter.promote(ride, now());
 
         notifyOtherMembers(ride, userId, NotificationType.RIDE_UPDATED,
                 "The creator updated the ride details: %s. Please check the new time and route."
@@ -136,6 +147,7 @@ public class RideService {
         });
         ride.markCancelled();
         log.info("User {} cancelled ride {}", userId, rideId);
+        waitlistPromoter.clear(ride, "the ride was cancelled");
 
         notifyOtherMembers(ride, userId, NotificationType.RIDE_CANCELLED,
                 "Ride %s was cancelled by its creator. Search again to find another group."
@@ -151,6 +163,7 @@ public class RideService {
             throw e;
         });
         ride.markStarted();
+        waitlistPromoter.clear(ride, "the ride has already started");
         notifyOtherMembers(ride, userId, NotificationType.RIDE_STARTED,
                 "Ride %s has started.".formatted(RideMessages.describe(ride)));
         realtimePublisher.publishRideEvent(ride, RideEvent.RideEventType.RIDE_STARTED);
@@ -178,8 +191,20 @@ public class RideService {
                 .filter(p -> p.getUser().getId().equals(viewerId))
                 .findFirst()
                 .orElse(null);
-        return rideMapper.toDetail(ride, participants, viewer,
-                ridePolicy.actionsFor(ride, viewerId, viewer, now()));
+        WaitlistStatus waitlist = waitlistStatus(ride.getId(), viewerId);
+        return rideMapper.toDetail(ride, participants, viewer, waitlist,
+                ridePolicy.actionsFor(ride, viewerId, viewer, waitlist, now()));
+    }
+
+    private WaitlistStatus waitlistStatus(Long rideId, Long viewerId) {
+        List<WaitlistEntry> queue = waitlistRepository.findQueue(rideId);
+        for (int i = 0; i < queue.size(); i++) {
+            WaitlistEntry entry = queue.get(i);
+            if (entry.getUser().getId().equals(viewerId)) {
+                return new WaitlistStatus(queue.size(), i + 1, entry.getSeatsRequested());
+            }
+        }
+        return queue.isEmpty() ? WaitlistStatus.EMPTY : new WaitlistStatus(queue.size(), null, null);
     }
 
     private void notifyOtherMembers(Ride ride, Long actorId, NotificationType type, String message) {

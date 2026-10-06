@@ -6,6 +6,7 @@ import com.rideshare.ride.dto.PublicUserSummary;
 import com.rideshare.ride.dto.RideActions;
 import com.rideshare.ride.dto.RideDetailResponse;
 import com.rideshare.ride.dto.RideSummaryResponse;
+import com.rideshare.ride.waitlist.WaitlistStatus;
 import com.rideshare.user.User;
 import org.springframework.stereotype.Component;
 
@@ -44,7 +45,7 @@ public class RideMapper {
      * @param viewer       the viewer's participation, or null if not a member
      */
     public RideDetailResponse toDetail(Ride ride, List<RideParticipant> participants, RideParticipant viewer,
-                                       RideActions actions) {
+                                       WaitlistStatus waitlist, RideActions actions) {
         boolean member = viewer != null;
         List<ParticipantResponse> visibleParticipants = List.of();
         FareSplitResponse fareSplit = null;
@@ -72,6 +73,6 @@ public class RideMapper {
         }
 
         return new RideDetailResponse(toSummary(ride), ride.getNotes(), member ? viewer.getRole() : null,
-                participants.size(), visibleParticipants, fareSplit, shareIfJoined, actions);
+                participants.size(), visibleParticipants, fareSplit, shareIfJoined, waitlist, actions);
     }
 }

@@ -1,6 +1,7 @@
 package com.rideshare.ride.dto;
 
 import com.rideshare.ride.ParticipantRole;
+import com.rideshare.ride.waitlist.WaitlistStatus;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -8,7 +9,8 @@ import java.util.List;
 /**
  * Detail view. Members get participant names, phone numbers and the fare split;
  * non-members only see the ride, the creator's display name, a member count and
- * what their share would be if they joined.
+ * what their share would be if they joined. Everyone sees the waitlist size and
+ * their own place in it.
  */
 public record RideDetailResponse(
         RideSummaryResponse ride,
@@ -18,6 +20,7 @@ public record RideDetailResponse(
         List<ParticipantResponse> participants,
         FareSplitResponse fareSplit,
         BigDecimal estimatedShareIfJoined,
+        WaitlistStatus waitlist,
         RideActions actions
 ) {
 }

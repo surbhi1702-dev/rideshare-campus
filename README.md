@@ -12,22 +12,24 @@ roughly the same time**, forms a shared group, and splits the cab fare between t
 
 1. [Problem statement](#problem-statement)
 2. [Features](#features)
-3. [Architecture](#architecture)
-4. [Technology stack (and why each piece is there)](#technology-stack)
-5. [Project structure](#project-structure)
-6. [Database design](#database-design)
-7. [Matching algorithm](#matching-algorithm)
-8. [Concurrency: the last-seat problem](#concurrency-the-last-seat-problem)
-9. [Security architecture](#security-architecture)
-10. [API](#api)
-11. [Running locally](#running-locally)
-12. [Running with Docker](#running-with-docker)
-13. [Environment variables](#environment-variables)
-14. [Testing](#testing)
-15. [Deployment](#deployment)
-16. [Sample users and rides](#sample-users-and-rides)
-17. [Example API requests](#example-api-requests)
-18. [Future scope](#future-scope)
+3. [What changed in V2](#what-changed-in-v2)
+4. [Architecture](#architecture)
+5. [Technology stack (and why each piece is there)](#technology-stack)
+6. [Project structure](#project-structure)
+7. [Database design](#database-design)
+8. [Matching algorithm](#matching-algorithm)
+9. [Concurrency: the last-seat problem](#concurrency-the-last-seat-problem)
+10. [Security architecture](#security-architecture)
+11. [API](#api)
+12. [Running locally](#running-locally)
+13. [Running with Docker](#running-with-docker)
+14. [Environment variables](#environment-variables)
+15. [Testing](#testing)
+16. [Deployment](#deployment)
+17. [Sample users and rides](#sample-users-and-rides)
+18. [Example API requests](#example-api-requests)
+19. [Measuring it yourself](#measuring-it-yourself)
+20. [Future scope](#future-scope)
 
 ---
 
@@ -49,11 +51,15 @@ that ranks compatible rides by pickup distance, drop distance, time difference a
 
 | Area | What is implemented |
 |---|---|
-| Accounts | Registration restricted to configurable institute domains, BCrypt passwords, JWT login, roles `STUDENT` / `ADMIN`, profile edit, password change |
+| Accounts | Registration restricted to configurable institute domains, BCrypt passwords, roles `STUDENT` / `ADMIN`, profile edit, password change |
+| Sessions | 15-minute access token kept in memory + refresh token in an httpOnly cookie, rotated on every use, with reuse detection |
 | Rides | Create, view, edit (creator only), cancel, start, complete; status machine `OPEN → FULL → STARTED → COMPLETED`, `CANCELLED` |
 | Matching | Ranked search for an ad-hoc trip (`/api/rides/search`) and "rides similar to mine" (`/api/rides/{id}/matches`), with an explainable score |
 | Suggestions | Posting a ride notifies creators of compatible existing rides ("reverse matching") |
 | Groups | Join with 1..n seats, leave, capacity enforcement, no duplicates, no joining cancelled/completed/started/departed rides |
+| Waitlist | Queue for a full ride; a freed seat goes to the first waiter whose request fits, inside the same locked transaction |
+| Safe retries | `Idempotency-Key` on join / waitlist so a retried request after a network drop never books twice |
+| Rate limiting | Token bucket per IP on login/register and per user on join/waitlist → `429` + `Retry-After` |
 | Merge | Join a better ride and cancel your own (empty) ride **in one transaction** |
 | Overlap guard | A student cannot hold two active rides departing within 90 minutes of each other |
 | Concurrency | Row-level locking on the ride; DB `CHECK` and `UNIQUE` constraints as a safety net |
@@ -63,7 +69,29 @@ that ranks compatible rides by pickup distance, drop distance, time difference a
 | Safety and privacy | Institute-only sign-up, "First L." display names for non-members, phone numbers visible only inside the same ride, block (symmetric), report (only people you shared a ride with) |
 | Admin | Stats (users, rides by status, open reports, estimated savings), user search, deactivate/re-activate (takes effect immediately), ride list by status, report review |
 | Places | Configurable campus presets plus free OpenStreetMap (Nominatim) place search; no paid map API |
-| Ops | Flyway migrations, Swagger UI, Docker/Compose, health check, GitHub Actions CI |
+| Frontend | Responsive layout (phone menu, stacked tables), loading and retry states, Vitest + Testing Library tests |
+| Ops | Flyway migrations, Swagger UI, Docker/Compose, health check, JaCoCo coverage, GitHub Actions CI with a Render deploy step, Render + Vercel config |
+
+## What changed in V2
+
+V1 worked on one laptop. V2 is the set of changes I made to treat it more like something people would actually
+use: problems that show up with real networks, real browsers and more than one user at a time. I kept it to what
+one person can build and test properly, and left the rest as design notes (see [Future scope](#future-scope)).
+
+| Problem | What V2 does | Where |
+|---|---|---|
+| A full ride just says "full", and a seat that frees up later goes to whoever refreshes first | Waitlist. When a seat frees (leave, seat count raised) the first waiter whose seat request fits is promoted **inside the same row lock** as the leave, so a promotion can never over-book. Waiters who became ineligible (overlapping ride, blocked, deactivated) are skipped and told. Cancel/start clears the queue. | `ride/waitlist/*`, `V2__ride_waitlist.sql` |
+| Phone on campus Wi-Fi: join request reaches the server, response is lost, the app retries → "already joined" or a double booking | The client sends one `Idempotency-Key` per button press and retries only on network errors / 502-504. The key is stored in the **same transaction** as the join, so a retry replays the current result instead of booking again. Reusing a key for a different ride → `422`. Keys are purged after 24 h. | `common/idempotency/*`, `V3__idempotency_keys.sql`, `frontend/src/api/client.js` |
+| Password guessing, scripts hammering join | In-memory token bucket: login/register per client IP (default 20/min), join/waitlist per user (default 30/min). `429 RATE_LIMITED` with `Retry-After`; the UI says how long to wait. Refresh is deliberately not limited because a whole hostel can share one NAT IP. | `common/ratelimit/*` |
+| V1 kept a 24 h JWT in `localStorage`, readable by any XSS bug | 15-minute access token held only in memory; refresh token in an `httpOnly`, `SameSite=Lax` cookie scoped to `/api/auth`. Only a SHA-256 hash is stored. Each refresh rotates the token; presenting an already-rotated token later revokes the whole login (token family). Two tabs refreshing at the same moment is tolerated for 30 s. | `auth/session/*`, `V4__refresh_tokens.sql` |
+| Unusable on a phone, blank screens while loading | Collapsible phone menu, tables that turn into cards under 640 px, spinners and "Try again" on every page. | `frontend/src/styles.css`, `components/Feedback.jsx` |
+| "Works on my machine" | Frontend unit/component tests in CI, JaCoCo coverage report, Render (API + Postgres) and Vercel (frontend) config, deploy only after tests pass. | `.github/workflows/ci.yml`, `render.yaml`, `frontend/vercel.json`, `docs/DEPLOYMENT.md` |
+| No way to show the concurrency handling actually works | A race-demo script and two k6 load tests you run yourself. | `scripts/`, [`docs/METRICS.md`](docs/METRICS.md) |
+
+**Limits I know about.** Rate-limit buckets live in one JVM's memory, so they reset on restart and would not be
+shared across several instances (Redis would fix that). Behind a proxy the client IP comes from
+`X-Forwarded-For`, which is only as trustworthy as the proxy in front. The free Render tier sleeps when idle, so the
+first request after a while is slow.
 
 ## Architecture
 
@@ -325,9 +353,20 @@ released together by a latch):
 
 ## Security architecture
 
-- **Authentication.** `POST /api/auth/login` checks the BCrypt hash and returns an HMAC-SHA256 JWT that holds only
-  the user id and role. Unknown email and wrong password give the same message and take the same time (a
+- **Authentication.** `POST /api/auth/login` checks the BCrypt hash and returns a short-lived (15 min) HMAC-SHA256
+  JWT that holds only the user id and role, and sets the refresh cookie. Unknown email and wrong password give the same message and take the same time (a
   dummy BCrypt check runs), so accounts cannot be enumerated.
+- **Sessions (V2).**
+  - The access token is kept in a JavaScript variable only; a page reload gets a new one from
+    `POST /api/auth/refresh` using the `rs_refresh` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/api/auth`,
+    `Secure` in production).
+  - The database stores only the SHA-256 of each refresh token. Every refresh rotates it (row-locked, so two
+    concurrent refreshes cannot both win).
+  - Reuse detection: if a token that was rotated more than 30 s ago comes back, someone else had a copy, so the
+    whole token family is revoked and both parties must log in again.
+  - Logout revokes the family and clears the cookie. Deactivated users cannot refresh.
+  - CSRF: the cookie is only sent to `/api/auth`, `SameSite=Lax` blocks cross-site POSTs, and `/refresh` and
+    `/logout` additionally require an `X-Requested-With` header that a plain HTML form cannot set.
 - **Per-request check.** `JwtAuthenticationFilter` verifies the signature, issuer and expiry, then loads the user and
   requires `active = true`. Deactivating a user therefore locks them out **immediately**, even with a valid token.
 - **Registration.** Only emails in `ALLOWED_EMAIL_DOMAINS` (subdomains allowed; look-alikes such as
@@ -356,14 +395,14 @@ released together by a latch):
     authorised REST endpoint.
   - Events are sent **after commit**, so nobody is told about a join that was rolled back.
 - **Transport and config.**
-  - The API is stateless and uses no cookies, so CSRF protection is unnecessary and disabled.
+  - Normal API calls authenticate with the `Authorization` header, not cookies, so they need no CSRF token. The
+    only cookie endpoints are covered as described under Sessions.
   - CORS is limited to `CORS_ALLOWED_ORIGINS`, and nginx serves everything from one origin in production.
   - Secrets come only from environment variables. `JWT_SECRET` has no default, so the application refuses to
     start without one.
 - **Errors.** Every failure is an `ApiError { status, code, message, fieldErrors }`. SQL, stack traces and class
   names are logged, never returned.
-- **Known trade-off.** The frontend keeps the JWT in `localStorage` for simplicity. An httpOnly cookie plus a CSRF
-  token or a refresh-token rotation scheme is listed in future scope.
+- **Abuse.** Rate limits on login/register (per IP) and join/waitlist (per user); see [What changed in V2](#what-changed-in-v2).
 
 ## API
 
@@ -373,7 +412,9 @@ the token from login.
 | Method | Path | Who | Purpose |
 |---|---|---|---|
 | POST | `/api/auth/register` | public | Register (institute email) → 201 + token |
-| POST | `/api/auth/login` | public | Log in → token |
+| POST | `/api/auth/login` | public | Log in → access token + refresh cookie |
+| POST | `/api/auth/refresh` | refresh cookie | New access token, rotates the cookie (needs `X-Requested-With`) |
+| POST | `/api/auth/logout` | refresh cookie | End the session, clear the cookie → 204 |
 | GET / PUT | `/api/users/me` | student | My profile / update name and phone |
 | PUT | `/api/users/me/password` | student | Change password → 204 |
 | GET | `/api/places` | student | Preset pickup/drop points |
@@ -384,7 +425,9 @@ the token from login.
 | GET | `/api/rides/{id}` | student | Ride detail (privacy depends on membership) |
 | PUT | `/api/rides/{id}` | creator | Update ride |
 | GET | `/api/rides/{id}/matches` | member | Rides similar to this one |
-| POST | `/api/rides/{id}/join` | student | Join (`{ "seats": 1, "replaceRideId": null }`) |
+| POST | `/api/rides/{id}/join` | student | Join (`{ "seats": 1, "replaceRideId": null }`), optional `Idempotency-Key` header |
+| POST | `/api/rides/{id}/waitlist` | student | Join the waitlist of a full ride (`{ "seats": 1 }`), optional `Idempotency-Key` |
+| DELETE | `/api/rides/{id}/waitlist` | waiter | Leave the waitlist |
 | POST | `/api/rides/{id}/leave` | member | Leave, freeing the seats |
 | POST | `/api/rides/{id}/cancel` | creator | Cancel; members are notified |
 | POST | `/api/rides/{id}/start` · `/complete` | creator | Status transitions |
@@ -409,7 +452,8 @@ the token from login.
 
 **Status codes**: `200`, `201` (create/register/block/report), `204` (no body), `400` validation or business-rule
 input, `401` not authenticated, `403` not allowed / deactivated / blocked, `404` not found, `409` state conflict
-(`RIDE_FULL`, `ALREADY_JOINED`, `RIDE_CANCELLED`, `OVERLAPPING_RIDE`, `CONCURRENT_UPDATE`, …).
+(`RIDE_FULL`, `ALREADY_JOINED`, `RIDE_CANCELLED`, `OVERLAPPING_RIDE`, `CONCURRENT_UPDATE`, `ALREADY_WAITLISTED`,
+`SEATS_AVAILABLE`, `WAITLIST_FULL`, …), `422` `IDEMPOTENCY_KEY_REUSED`, `429` `RATE_LIMITED` (with `Retry-After`).
 
 Error body:
 ```json
@@ -464,10 +508,18 @@ docker compose up --build
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DB_URL` | `jdbc:postgresql://localhost:5432/rideshare` | JDBC URL |
+| `DB_URL` | built from `DB_HOST` / `DB_PORT` / `DB_NAME` (`localhost` / `5432` / `rideshare`) | JDBC URL |
 | `DB_USERNAME` / `DB_PASSWORD` | `rideshare` / **required** | DB credentials |
 | `JWT_SECRET` | **required** | Base64 key, ≥ 256 bits |
-| `JWT_EXPIRATION_MINUTES` | `1440` | Token lifetime |
+| `JWT_EXPIRATION_MINUTES` | `15` | Access token lifetime |
+| `REFRESH_TOKEN_DAYS` | `14` | Refresh cookie lifetime |
+| `REFRESH_COOKIE_SECURE` | `false` | `true` when served over HTTPS |
+| `REFRESH_COOKIE_SAME_SITE` | `Lax` | Refresh cookie SameSite |
+| `REFRESH_REUSE_GRACE_SECONDS` | `30` | Window in which a just-rotated token is rejected without revoking the session |
+| `FORWARD_HEADERS_STRATEGY` | `none` | `framework` behind a proxy so rate limiting sees the client IP |
+| `RATE_LIMIT_ENABLED` | `true` | Turn off only for the race demo / load tests |
+| `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_JOIN_PER_MINUTE` | `20` / `30` | Per IP (login, register) / per user (join, waitlist) |
+| `RIDE_MAX_WAITLIST_SIZE` | `20` | Max waiters per ride |
 | `ALLOWED_EMAIL_DOMAINS` | `iitbbs.ac.in` | Comma-separated registration domains |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Browser origins allowed to call the API/WebSocket |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `ADMIN_NAME` | empty | Bootstrap admin (created once) |
@@ -515,12 +567,35 @@ mvn verify
 | `MatchingSearchIntegrationTest` | integration | Ranked search, exclusions, matches for my ride, suggestions, browse filters, block, report |
 | `AdminIntegrationTest` | integration | 403 for students, stats, immediate deactivation, report review |
 | `ConcurrentSeatAllocationIntegrationTest` | **integration, concurrent** | Last-seat race, 10-for-3 race, double-click |
+| `WaitlistIntegrationTest` | integration, concurrent | Position, promotion on leave / seat increase, first-fit, skipping ineligible waiters, cancel clears queue, three simultaneous leaves |
+| `IdempotentJoinIntegrationTest` | integration, concurrent | Replay with the same key, key reuse → 422, bad key → 400, two copies of one request at once book once |
+| `SessionIntegrationTest` | integration | Cookie attributes, rotation, two-tab grace, reuse revokes the family, logout, CSRF header, deactivated user |
+| `RateLimiterTest`, `RateLimitIntegrationTest` | unit + integration | Token bucket refill, 429 + `Retry-After` |
 
-The same suite runs in GitHub Actions against a PostgreSQL service container (`.github/workflows/ci.yml`).
+Coverage: `mvn verify` also writes a JaCoCo report to `backend/target/site/jacoco/index.html`.
+
+Frontend (Vitest + Testing Library, no backend needed):
+
+```bash
+cd frontend
+npm install
+npm test
+```
+
+They cover the API client (silent refresh, one shared refresh for parallel 401s, idempotent retries), the login
+page and the ride page's waitlist buttons.
+
+Both suites run in GitHub Actions (`.github/workflows/ci.yml`); the backend one against a PostgreSQL service
+container.
 
 ## Deployment
 
-The Compose stack is production-shaped: a non-root JRE image with a health check, and nginx on a single
+**Free hosted demo (V2):** backend + PostgreSQL on Render (`render.yaml`), frontend on Vercel
+(`frontend/vercel.json`). Vercel forwards `/api/*` to Render, so the refresh cookie stays first-party; the
+WebSocket connects to Render directly. GitHub Actions deploys the backend only after both test jobs pass.
+Step by step: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+**Own VM:** the Compose stack is production-shaped: a non-root JRE image with a health check, and nginx on a single
 origin. For a real campus deployment:
 
 1. **One VM** (for example AWS Lightsail/EC2 or any 1–2 vCPU / 2 GB machine): install Docker, copy the repository and
@@ -591,13 +666,20 @@ curl -s "$API/notifications?unreadOnly=true" -H "Authorization: Bearer $TOKEN"
 curl -s -X PATCH $API/notifications/3/read -H "Authorization: Bearer $TOKEN"
 ```
 
+## Measuring it yourself
+
+[`docs/METRICS.md`](docs/METRICS.md) explains how to run the test suites, the coverage report, the race demo and
+the k6 load tests, and gives a table to record the numbers from your own machine. No numbers are quoted in this
+README on purpose: they depend on the hardware they were measured on.
+
 ## Future scope
 
 - Road-distance matching and "pick me up on the way" routing (OSRM/GraphHopper behind `DistanceCalculator`).
 - Email OTP verification of the institute address (V1 validates the domain only).
 - UPI payment requests and settlement tracking (no real payments, escrow or verification in V1).
-- Refresh tokens / httpOnly cookie sessions; rate limiting on login and join.
-- Recurring rides (every Friday to the station), waitlist when a ride is full.
+- Redis-backed rate limiting so limits are shared by several backend instances.
+- Metrics and dashboards (Micrometer + Prometheus/Grafana) instead of running k6 by hand.
+- Recurring rides (every Friday to the station).
 - Push notifications (web push / mobile), email digests.
 - Demand insights (popular routes and times), and later ML-based suggestions.
 - Live GPS sharing during a ride.

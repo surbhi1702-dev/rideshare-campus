@@ -1,5 +1,8 @@
 server:
   port: ${SERVER_PORT:8080}
+  # Behind a reverse proxy (Render, Vercel rewrite, nginx) set to "framework" so the
+  # client IP used for rate limiting comes from X-Forwarded-For.
+  forward-headers-strategy: ${FORWARD_HEADERS_STRATEGY:none}
   error:
     include-message: never
     include-stacktrace: never
@@ -8,7 +11,9 @@ spring:
   application:
     name: rideshare-campus
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/rideshare}
+    # DB_URL wins when set (docker compose, local). Hosts that hand out the parts
+    # separately (Render's managed Postgres) set DB_HOST / DB_PORT / DB_NAME instead.
+    url: ${DB_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:rideshare}}
     username: ${DB_USERNAME:rideshare}
     password: ${DB_PASSWORD}
     hikari:
@@ -59,7 +64,19 @@ app:
   jwt:
     # Base64 encoded key of at least 256 bits. Required - no default on purpose.
     secret: ${JWT_SECRET}
-    expiration-minutes: ${JWT_EXPIRATION_MINUTES:1440}
+    # Access tokens are short-lived and kept in browser memory only; the refresh
+    # cookie (app.session) silently gets a new one.
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:15}
+
+  session:
+    refresh-token-days: ${REFRESH_TOKEN_DAYS:14}
+    cookie-name: ${REFRESH_COOKIE_NAME:rs_refresh}
+    # true in production (HTTPS). Local http://localhost needs false.
+    cookie-secure: ${REFRESH_COOKIE_SECURE:false}
+    # Lax when the frontend proxies /api (same site). None only if the browser calls
+    # the API on a different site directly (then cookie-secure must be true).
+    cookie-same-site: ${REFRESH_COOKIE_SAME_SITE:Lax}
+    reuse-grace-seconds: ${REFRESH_REUSE_GRACE_SECONDS:30}
 
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
@@ -80,6 +97,15 @@ app:
     start-early-window-minutes: ${RIDE_START_EARLY_WINDOW_MINUTES:60}
     # Seat lock wait before a join/leave request gives up with 409.
     lock-timeout-ms: ${RIDE_LOCK_TIMEOUT_MS:3000}
+
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    auth-per-minute: ${RATE_LIMIT_AUTH_PER_MINUTE:20}
+    join-per-minute: ${RATE_LIMIT_JOIN_PER_MINUTE:30}
+
+  waitlist:
+    # Max students queued for one ride.
+    max-size: ${RIDE_MAX_WAITLIST_SIZE:20}
 
   matching:
     max-pickup-distance-km: ${MAX_PICKUP_DISTANCE_KM:3.0}
