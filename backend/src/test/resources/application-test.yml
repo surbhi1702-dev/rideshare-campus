@@ -1,0 +1,27 @@
+# Integration tests run against a real PostgreSQL (row locks and CHECK
+# constraints are part of what is being tested, so H2 would not be faithful).
+# Default: a local database "rideshare_test"; CI overrides via env vars.
+spring:
+  datasource:
+    url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/rideshare_test}
+    username: ${TEST_DB_USERNAME:postgres}
+    password: ${TEST_DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 20
+
+app:
+  jwt:
+    # Test-only key (base64 of 32+ random bytes). Never used outside tests.
+    secret: dGVzdC1vbmx5LWtleS1mb3ItcmlkZXNoYXJlLWNhbXB1cy1pbnRlZ3JhdGlvbi10ZXN0cw==
+  auth:
+    allowed-email-domains: iitbbs.ac.in
+  admin:
+    email: ""
+    password: ""
+  ride:
+    lock-timeout-ms: 10000
+
+logging:
+  level:
+    com.rideshare: WARN
+    org.springframework.web.socket: WARN

@@ -1,0 +1,6 @@
+# Demo profile: seeds sample students and rides (see DemoDataSeeder).
+# NEVER enable in production - the demo password is intentionally simple.
+app:
+  demo:
+    password: ${DEMO_USER_PASSWORD:Password123}
+    email-domain: ${DEMO_EMAIL_DOMAIN:iitbbs.ac.in}

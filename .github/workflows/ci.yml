@@ -1,0 +1,53 @@
+# Runs the backend test suite (unit + integration + concurrency) against a real
+# PostgreSQL service container, and verifies the frontend production build.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: rideshare_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build and test
+        env:
+          TEST_DB_URL: jdbc:postgresql://localhost:5432/rideshare_test
+          TEST_DB_USERNAME: postgres
+          TEST_DB_PASSWORD: postgres
+        run: mvn -B verify
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Switch to `npm ci` (and add npm caching) once package-lock.json is committed.
+      - run: npm install
+      - run: npm run build
