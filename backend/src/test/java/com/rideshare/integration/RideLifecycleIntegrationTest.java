@@ -214,7 +214,7 @@ class RideLifecycleIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(authed(put("/api/rides/{id}", rideId), creator)
                         .contentType(MediaType.APPLICATION_JSON).content(json(update)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.ride.departureAt").value(tomorrow() + "T10:00"));
+                .andExpect(jsonPath("$.ride.departureAt").value(tomorrow() + "T10:00:00"));
 
         update.put("totalSeats", 2);
         mockMvc.perform(authed(put("/api/rides/{id}", rideId), creator)

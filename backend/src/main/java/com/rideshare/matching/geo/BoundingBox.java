@@ -7,7 +7,8 @@ package com.rideshare.matching.geo;
  */
 public record BoundingBox(double minLatitude, double maxLatitude, double minLongitude, double maxLongitude) {
 
-    private static final double KM_PER_DEGREE_LATITUDE = 111.32;
+   // private static final double KM_PER_DEGREE_LATITUDE = 111.32;
+    private static final double KM_PER_DEGREE_LATITUDE = 111.0;
     /** Avoids division by ~0 near the poles (irrelevant for India, but keeps the maths total). */
     private static final double MIN_COS_LATITUDE = 0.01;
 
